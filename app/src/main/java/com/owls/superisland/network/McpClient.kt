@@ -52,7 +52,7 @@ interface LuckinMcpApi {
 object McpClient {
     private const val BASE_URL = "https://gwmcp.lkcoffee.com/"
     // The token provided by the user
-    private const val TOKEN = "325d14eda4914d16915e96b8d6487a707mcpLUCKIN_MCP_AI"
+    private const val TOKEN = "YOUR_LUCKIN_MCP_TOKEN_HERE"
 
     private val authInterceptor = Interceptor { chain ->
         val request = chain.request().newBuilder()
