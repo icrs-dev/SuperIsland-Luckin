@@ -1,0 +1,13 @@
+[WinError 10048] 通常每个套--- RECEIVED ---
+POST /order/user/mcp HTTP/1.1
+Host: 127.0.0.1:8080
+User-Agent: Go-http-client/1.1
+Content-Length: 159
+Accept: application/json, text/event-stream
+Authorization: Bearer 325d14eda4914d16915e96b8d6487a707mcpLUCKIN_MCP_AI
+Content-Type: application/json
+Mcp-Protocol-Version: 2025-06-18
+Accept-Encoding: gzip
+
+{"id":1,"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{},"clientInfo":{"name":"luckin-cli","version":"0.1.0"},"protocolVersion":"2025-06-18"}}
+----------------
