@@ -15,7 +15,7 @@ data class McpRequest(
     val jsonrpc: String = "2.0",
     val id: Int = 1,
     val method: String = "tools/call",
-    val params: McpParams
+    val params: com.google.gson.JsonElement? = null
 )
 
 data class McpParams(
@@ -26,17 +26,8 @@ data class McpParams(
 data class McpResponse(
     val jsonrpc: String,
     val id: Int,
-    val result: McpResult?,
+    val result: com.google.gson.JsonElement?,
     val error: McpError?
-)
-
-data class McpResult(
-    val content: List<McpContent>?
-)
-
-data class McpContent(
-    val type: String,
-    val text: String?
 )
 
 data class McpError(
@@ -51,12 +42,12 @@ interface LuckinMcpApi {
 
 object McpClient {
     private const val BASE_URL = "https://gwmcp.lkcoffee.com/"
-    // The token provided by the user
-    private const val TOKEN = "YOUR_LUCKIN_MCP_TOKEN_HERE"
+    // The token provided by the user, dynamically set at runtime
+    var token: String = ""
 
     private val authInterceptor = Interceptor { chain ->
         val request = chain.request().newBuilder()
-            .addHeader("Authorization", "Bearer $TOKEN")
+            .addHeader("Authorization", "Bearer $token")
             .addHeader("Content-Type", "application/json")
             .addHeader("Mcp-Protocol-Version", "2025-06-18")
             .addHeader("Accept", "application/json, text/event-stream")
@@ -83,86 +74,76 @@ object McpClient {
     
     val gson = Gson()
     
-    suspend fun queryShopList(lat: Double, lon: Double): String? {
+    private fun extractTextFromResult(result: com.google.gson.JsonElement?): String? {
+        if (result == null || !result.isJsonObject) return null
+        val contentArray = result.asJsonObject.getAsJsonArray("content")
+        if (contentArray != null && contentArray.size() > 0) {
+            val firstItem = contentArray.get(0).asJsonObject
+            if (firstItem.has("text")) {
+                return firstItem.get("text").asString
+            }
+        }
+        return null
+    }
+
+    suspend fun listTools(): String? {
         val req = McpRequest(
-            params = McpParams(
-                name = "queryShopList",
-                arguments = mapOf(
-                    "latitude" to lat,
-                    "longitude" to lon
-                )
-            )
+            method = "tools/list"
         )
         val response = api.callTool(req)
-        return response.result?.content?.firstOrNull()?.text
+        return response.result?.toString()
+    }
+
+    suspend fun executeTool(name: String, args: Map<String, Any>): String? {
+        val req = McpRequest(
+            params = gson.toJsonTree(McpParams(name, args))
+        )
+        val response = api.callTool(req)
+        if (response.error != null) {
+            throw Exception("MCP Error: ${response.error.message}")
+        }
+        return extractTextFromResult(response.result)
+    }
+
+    suspend fun queryShopList(lat: Double, lon: Double): String? {
+        return executeTool("queryShopList", mapOf(
+            "latitude" to lat,
+            "longitude" to lon
+        ))
     }
     
     suspend fun searchProduct(deptId: Int, query: String): String? {
-        val req = McpRequest(
-            params = McpParams(
-                name = "searchProductForMcp",
-                arguments = mapOf(
-                    "deptId" to deptId,
-                    "query" to query
-                )
-            )
-        )
-        val response = api.callTool(req)
-        return response.result?.content?.firstOrNull()?.text
+        return executeTool("searchProduct", mapOf(
+            "deptId" to deptId,
+            "keyword" to query
+        ))
     }
     
-    suspend fun previewOrder(deptId: Int, productId: Long, skuCode: String): String? {
-        val req = McpRequest(
-            params = McpParams(
-                name = "previewOrder",
-                arguments = mapOf(
-                    "deptId" to deptId,
-                    "productList" to listOf(
-                        mapOf(
-                            "amount" to 1,
-                            "productId" to productId,
-                            "skuCode" to skuCode
-                        )
-                    )
-                )
-            )
+    suspend fun previewOrder(deptId: Int, productId: Int, skuCode: String): String? {
+        val productList = listOf(
+            mapOf("amount" to 1, "productId" to productId, "skuCode" to skuCode)
         )
-        val response = api.callTool(req)
-        return response.result?.content?.firstOrNull()?.text
+        return executeTool("previewOrder", mapOf(
+            "deptId" to deptId,
+            "productList" to productList
+        ))
     }
-
-    suspend fun createOrder(deptId: Int, productId: Long, skuCode: String, lat: Double, lon: Double): String? {
-        val req = McpRequest(
-            params = McpParams(
-                name = "createOrder",
-                arguments = mapOf(
-                    "deptId" to deptId,
-                    "productList" to listOf(
-                        mapOf(
-                            "amount" to 1,
-                            "productId" to productId,
-                            "skuCode" to skuCode
-                        )
-                    ),
-                    "latitude" to lat,
-                    "longitude" to lon
-                )
-            )
+    
+    suspend fun createOrder(deptId: Int, productId: Int, skuCode: String, lat: Double, lon: Double): String? {
+        val productList = listOf(
+            mapOf("amount" to 1, "productId" to productId, "skuCode" to skuCode)
         )
-        val response = api.callTool(req)
-        return response.result?.content?.firstOrNull()?.text
+        return executeTool("createOrder", mapOf(
+            "deptId" to deptId,
+            "productList" to productList,
+            "latitude" to lat,
+            "longitude" to lon
+        ))
     }
 
     suspend fun queryOrderDetailInfo(orderId: String): String? {
-        val req = McpRequest(
-            params = McpParams(
-                name = "queryOrderDetailInfo",
-                arguments = mapOf(
-                    "orderId" to orderId
-                )
-            )
-        )
-        val response = api.callTool(req)
-        return response.result?.content?.firstOrNull()?.text
+        return executeTool("queryOrderDetailInfo", mapOf(
+            "orderId" to orderId
+        ))
     }
 }

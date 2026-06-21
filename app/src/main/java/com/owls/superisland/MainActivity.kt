@@ -113,6 +113,27 @@ fun BrutalistApp(
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
 
+    LaunchedEffect(Unit) {
+        val sharedPrefs = context.getSharedPreferences("superisland_prefs", Context.MODE_PRIVATE)
+        val savedToken = sharedPrefs.getString("mcp_token", "") ?: ""
+        if (savedToken.isNotEmpty()) {
+            McpClient.token = savedToken
+        } else {
+            messages = listOf(
+                ChatMessage("LUCKIN AGENT ONLINE.", false),
+                ChatMessage("NO LUCKIN TOKEN FOUND.", false),
+                ChatMessage("PLEASE SET IT USING: 设置TOKEN [你的Token]", false)
+            )
+        }
+
+        // Initialize LLM configs
+        com.owls.superisland.network.LlmClient.apiKey = sharedPrefs.getString("llm_key", "") ?: ""
+        val savedEndpoint = sharedPrefs.getString("llm_endpoint", "") ?: ""
+        if (savedEndpoint.isNotEmpty()) com.owls.superisland.network.LlmClient.endpoint = savedEndpoint
+        val savedModel = sharedPrefs.getString("llm_model", "") ?: ""
+        if (savedModel.isNotEmpty()) com.owls.superisland.network.LlmClient.model = savedModel
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -217,184 +238,94 @@ suspend fun processCommand(
     onResponse: (String) -> Unit
 ) {
     try {
-        if (cmd.contains("门店") || cmd.contains("查")) {
-            // Check location permissions
-            if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                onResponse("MISSING LOCATION PERMISSION. REQUESTING...")
-                requestLocationPerm()
-                return
+        if (cmd.startsWith("设置TOKEN ")) {
+            val token = cmd.substring("设置TOKEN ".length).trim()
+            if (token.isNotEmpty()) {
+                val sharedPrefs = context.getSharedPreferences("superisland_prefs", Context.MODE_PRIVATE)
+                sharedPrefs.edit().putString("mcp_token", token).apply()
+                McpClient.token = token
+                onResponse("TOKEN SAVED SUCCESSFULLY.")
+            } else {
+                onResponse("INVALID TOKEN FORMAT.")
             }
-            
-            onResponse("ACQUIRING GPS SIGNAL...")
-            // Fetch real location
-            val location = fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
-            if (location == null) {
-                onResponse("FAILED TO GET LOCATION. GPS MIGHT BE OFF.")
-                return
-            }
-            
-            onResponse("LOCATION: ${location.latitude}, ${location.longitude}. EXECUTING QUERY...")
-            val response = McpClient.queryShopList(location.latitude, location.longitude)
-            if (response == null) {
-                onResponse("NO DATA RETURNED FROM MCP.")
-                return
-            }
-            try {
-                // MCP returns a JSON string inside the text block, so we parse it
-                val jsonObj = org.json.JSONObject(response)
-                // The actual payload might be wrapped in another JSON string or directly available
-                // In my test it was directly available as {"code":0,"msg":"success","data":[...]}
-                val dataObj = if (jsonObj.has("data") && jsonObj.optJSONArray("data") == null) {
-                     // Sometimes it might be double stringified
-                     org.json.JSONObject(jsonObj.getString("data"))
-                } else jsonObj
+            return
+        }
+        
+        if (McpClient.token.isEmpty()) {
+            onResponse("ERROR: NO TOKEN. PLEASE SET IT USING: 设置TOKEN [你的Token]")
+            return
+        }
 
-                val dataArray = dataObj.optJSONArray("data")
-                if (dataArray != null && dataArray.length() > 0) {
-                    val sb = java.lang.StringBuilder()
-                    sb.append("FOUND ${dataArray.length()} STORES:\n")
-                    OrderSession.shops.clear()
-                    OrderSession.lat = location.latitude
-                    OrderSession.lon = location.longitude
-                    
-                    val maxItems = kotlin.math.min(5, dataArray.length())
-                    for (i in 0 until maxItems) {
-                        val shop = dataArray.getJSONObject(i)
-                        val deptId = shop.optInt("deptId")
-                        val deptName = shop.optString("deptName")
-                        val distance = shop.optDouble("distance")
-                        OrderSession.shops.add(deptId)
-                        sb.append("[${i + 1}] $deptName (${distance}km)\n")
-                    }
-                    sb.append("\nRUN '选 [1-$maxItems]' TO SELECT STORE.")
-                    onResponse(sb.toString())
-                } else {
-                    onResponse("NO STORES FOUND OR BAD FORMAT.\nRAW: $response")
-                }
-            } catch (e: Exception) {
-                onResponse("FAILED TO PARSE STORES JSON: ${e.message}\nRAW: $response")
+        if (cmd.startsWith("设置LLM_KEY ")) {
+            val key = cmd.substring("设置LLM_KEY ".length).trim()
+            context.getSharedPreferences("superisland_prefs", android.content.Context.MODE_PRIVATE).edit().putString("llm_key", key).apply()
+            com.owls.superisland.network.LlmClient.apiKey = key
+            onResponse("LLM KEY SAVED.")
+            return
+        }
+        if (cmd.startsWith("设置ENDPOINT ")) {
+            val url = cmd.substring("设置ENDPOINT ".length).trim()
+            context.getSharedPreferences("superisland_prefs", android.content.Context.MODE_PRIVATE).edit().putString("llm_endpoint", url).apply()
+            com.owls.superisland.network.LlmClient.endpoint = url
+            onResponse("LLM ENDPOINT SAVED.")
+            return
+        }
+        if (cmd.startsWith("设置MODEL ")) {
+            val model = cmd.substring("设置MODEL ".length).trim()
+            context.getSharedPreferences("superisland_prefs", android.content.Context.MODE_PRIVATE).edit().putString("llm_model", model).apply()
+            com.owls.superisland.network.LlmClient.model = model
+            onResponse("LLM MODEL SAVED.")
+            return
+        }
+
+        if (cmd == "PAY") {
+            if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                onResponse("MISSING LOCATION PERMISSION.")
+                return
             }
+            onResponse("ACQUIRING GPS SIGNAL...")
+            val location = fusedLocationClient.getCurrentLocation(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY, null).await()
+            val lat = location?.latitude ?: 0.0
+            val lon = location?.longitude ?: 0.0
             
-        } else if (cmd.startsWith("选 ")) {
-            val parts = cmd.split(" ")
-            if (parts.size >= 2) {
-                val index = parts[1].toIntOrNull()
-                if (index != null && index >= 1 && index <= OrderSession.shops.size) {
-                    OrderSession.deptId = OrderSession.shops[index - 1]
-                    onResponse("SAVED DEPT_ID: ${OrderSession.deptId}")
-                } else {
-                    onResponse("INVALID SHOP NUMBER. PLEASE CHOOSE BETWEEN 1 AND ${OrderSession.shops.size}.")
+            LlmAgent.processPay(lat, lon) { resultStr ->
+                onResponse(resultStr)
+                // If it looks like JSON with orderId, start polling
+                val match = Regex("\"orderId\"\\s*:\\s*\"([a-zA-Z0-9]+)\"").find(resultStr)
+                if (match != null) {
+                    OrderSession.orderId = match.groupValues[1]
+                    onResponse("ORDER SUCCESS! ID: ${OrderSession.orderId}\nSTARTING POLLING...")
+                    startPolling(context)
                 }
             }
-        } else if (cmd.contains("测") || cmd.contains("岛")) {
+            return
+        }
+
+        if (cmd == "测" || cmd == "岛") {
             onResponse("EXECUTING ISLAND TEST...")
             HyperOSIslandHelper.updateOrderNotification(context, "测试中", "A000")
             onResponse("TEST ONGOING NOTIFICATION SENT.")
-        } else if (cmd.contains("搜") || cmd.contains("拿铁") || cmd.contains("美式")) {
-            if (OrderSession.deptId == null) {
-                onResponse("ERROR: MISSING DEPT_ID. PLEASE RUN '查门店' THEN '选 [号]' FIRST.")
-                return
-            }
-            onResponse("EXECUTING: $cmd...")
-            val query = if (cmd.startsWith("搜")) cmd.substring(1).trim() else cmd.trim()
-            val response = McpClient.searchProduct(OrderSession.deptId!!, query)
-            if (response == null) {
-                onResponse("NO DATA RETURNED FROM MCP.")
-                return
-            }
-            
-            try {
-                val jsonObj = org.json.JSONObject(response)
-                val dataObj = if (jsonObj.has("data") && jsonObj.optJSONArray("data") == null) {
-                     org.json.JSONObject(jsonObj.getString("data"))
-                } else jsonObj
-                
-                val dataArray = dataObj.optJSONArray("data")
-                if (dataArray != null && dataArray.length() > 0) {
-                    val sb = java.lang.StringBuilder()
-                    sb.append("FOUND PRODUCTS:\n")
-                    OrderSession.products.clear()
-                    val maxItems = kotlin.math.min(5, dataArray.length())
-                    for (i in 0 until maxItems) {
-                        val prod = dataArray.getJSONObject(i)
-                        val name = prod.optString("name")
-                        val productId = prod.optLong("productId")
-                        val skuCode = prod.optString("skuCode")
-                        OrderSession.products.add(SessionProduct(productId, skuCode, name))
-                        sb.append("[${i + 1}] $name\n")
-                    }
-                    sb.append("\nRUN: 点 [1-$maxItems]")
-                    onResponse(sb.toString())
-                } else {
-                    onResponse("NO PRODUCTS FOUND.\nRAW: $response")
-                }
-            } catch (e: Exception) {
-                onResponse("FAILED TO PARSE PRODUCTS JSON: ${e.message}\nRAW: $response")
-            }
-        } else if (cmd.startsWith("点 ") || cmd.startsWith("买 ")) {
-            val parts = cmd.split(" ")
-            if (parts.size >= 2) {
-                val index = parts[1].toIntOrNull()
-                if (index != null && index >= 1 && index <= OrderSession.products.size) {
-                    val prod = OrderSession.products[index - 1]
-                    OrderSession.productId = prod.productId
-                    OrderSession.skuCode = prod.skuCode
-                    
-                    if (OrderSession.deptId == null) {
-                        onResponse("ERROR: MISSING DEPT ID. RUN '查门店' FIRST.")
-                        return
-                    }
-                    
-                    onResponse("PREVIEWING ORDER FOR [${prod.name}]...")
-                    val response = McpClient.previewOrder(OrderSession.deptId!!, OrderSession.productId!!, OrderSession.skuCode!!)
-                    onResponse(response ?: "FAILED TO PREVIEW ORDER.")
-                    onResponse("ORDER PREPARED. TYPE 'PAY' TO CONFIRM AND PAY (WARNING: REAL CHARGE).")
-                } else {
-                    onResponse("INVALID PRODUCT NUMBER. PLEASE CHOOSE BETWEEN 1 AND ${OrderSession.products.size}.")
-                }
-            } else {
-                onResponse("INVALID FORMAT. TRY: 点 1")
-            }
-        } else if (cmd.startsWith("下单")) {
-            val parts = cmd.split(" ")
-            if (parts.size >= 3) {
-                OrderSession.productId = parts[1].toLongOrNull()
-                OrderSession.skuCode = parts[2]
-                
-                if (OrderSession.deptId == null) {
-                    onResponse("ERROR: MISSING DEPT ID. RUN '查门店' FIRST.")
-                    return
-                }
-                
-                onResponse("PREVIEWING ORDER...")
-                val response = McpClient.previewOrder(OrderSession.deptId!!, OrderSession.productId!!, OrderSession.skuCode!!)
-                onResponse(response ?: "FAILED TO PREVIEW ORDER.")
-                onResponse("ORDER PREPARED. TYPE 'PAY' TO CONFIRM AND PAY (WARNING: REAL CHARGE).")
-            } else {
-                onResponse("INVALID FORMAT. TRY: 下单 [productId] [skuCode]")
-            }
-        } else if (cmd == "PAY") {
-            if (OrderSession.deptId == null || OrderSession.productId == null || OrderSession.skuCode == null || OrderSession.lat == null) {
-                onResponse("ERROR: NO ORDER TO PAY FOR.")
-                return
-            }
-            onResponse("CREATING REAL ORDER...")
-            val response = McpClient.createOrder(OrderSession.deptId!!, OrderSession.productId!!, OrderSession.skuCode!!, OrderSession.lat!!, OrderSession.lon!!)
-            onResponse(response ?: "FAILED TO CREATE ORDER.")
-            
-            // Extract orderId from response JSON
-            val match = Regex("\"orderId\"\\s*:\\s*\"([a-zA-Z0-9]+)\"").find(response ?: "")
-            if (match != null) {
-                OrderSession.orderId = match.groupValues[1]
-                onResponse("ORDER SUCCESS! ID: ${OrderSession.orderId}")
-                onResponse("STARTING POLLING FOR STATUS UPDATES...")
-                startPolling(context)
-            } else {
-                onResponse("ORDER CREATED BUT FAILED TO EXTRACT ID. CANNOT POLL.")
-            }
-        } else {
-            onResponse("UNKNOWN COMMAND. TRY: '查门店', '搜生椰拿铁', '下单 [id] [sku]', 'PAY'")
+            return
         }
+
+        // Pass natural language to LLM
+        if (com.owls.superisland.network.LlmClient.apiKey.isEmpty()) {
+            onResponse("ERROR: NO LLM KEY. PLEASE SET IT USING: 设置LLM_KEY [KEY]")
+            return
+        }
+        
+        if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            onResponse("MISSING LOCATION PERMISSION. REQUESTING...")
+            requestLocationPerm()
+            return
+        }
+        onResponse("ACQUIRING GPS SIGNAL...")
+        val location = fusedLocationClient.getCurrentLocation(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY, null).await()
+        val lat = location?.latitude ?: 0.0
+        val lon = location?.longitude ?: 0.0
+
+        onResponse("THINKING...")
+        LlmAgent.processUserInput(cmd, lat, lon, onResponse)
     } catch (e: Exception) {
         onResponse("ERROR: ${e.message}")
     }
